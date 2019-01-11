@@ -28,7 +28,3 @@ func TestParseQueueMetrics(t *testing.T) {
   data, err := ioutil.ReadAll(file)
   t.Logf("%+v", ParseQueueMetrics(data))
 }
-
-func TestQueueGetMetrics(t *testing.T) {
-  t.Logf("%+v", QueueGetMetrics())
-}

@@ -21,21 +21,14 @@ import (
 	"log"
 	"os/exec"
 	"strings"
+	"strconv"
 )
 
+
+type QueueInfo map[string]QueueCounts
+type QueueCounts map[string]float64
 type QueueMetrics struct {
-	pending     float64
-	pending_dep float64
-	running     float64
-	suspended   float64
-	cancelled   float64
-	completing  float64
-	completed   float64
-	configuring float64
-	failed      float64
-	timeout     float64
-	preempted   float64
-	node_fail   float64
+	slurm_queue QueueInfo
 }
 
 // Returns the scheduler metrics
@@ -44,39 +37,33 @@ func QueueGetMetrics() *QueueMetrics {
 }
 
 func ParseQueueMetrics(input []byte) *QueueMetrics {
-	var qm QueueMetrics
+	qm := QueueMetrics{}
+	qm.slurm_queue = make(map[string]QueueCounts)
+
 	lines := strings.Split(string(input), "\n")
 	for _, line := range lines {
 		if strings.Contains(line, ",") {
 			splitted := strings.Split(line, ",")
-			state := splitted[1]
-			switch state {
-			case "PENDING":
-				qm.pending++
-				if len(splitted) > 2 && splitted[2] == "Dependency" {
-					qm.pending_dep++
-				}
-			case "RUNNING":
-				qm.running++
-			case "SUSPENDED":
-				qm.suspended++
-			case "CANCELLED":
-				qm.cancelled++
-			case "COMPLETING":
-				qm.completing++
-			case "COMPLETED":
-				qm.completed++
-			case "CONFIGURING":
-				qm.configuring++
-			case "FAILED":
-				qm.failed++
-			case "TIMEOUT":
-				qm.timeout++
-			case "PREEMPTED":
-				qm.preempted++
-			case "NODE_FAIL":
-				qm.node_fail++
+
+			partition := splitted[0]
+			user := splitted[1]
+			name := splitted[2]
+			state := splitted[3]
+
+			cores, err := strconv.ParseFloat(splitted[4],64)
+			if err != nil { log.Fatal(err) }
+			mem, err := strconv.ParseFloat(splitted[5],64)
+			if err != nil { log.Fatal(err) }
+
+			indexstr := strings.Join([]string{partition, user, name, state}, ",")
+
+			if qm.slurm_queue[indexstr] == nil {
+				qm.slurm_queue[indexstr] = make(map[string]float64)
 			}
+
+			qm.slurm_queue[indexstr]["jobs"]++
+			qm.slurm_queue[indexstr]["cores"]+=cores
+			qm.slurm_queue[indexstr]["mem"]+=mem
 		}
 	}
 	return &qm
@@ -84,7 +71,7 @@ func ParseQueueMetrics(input []byte) *QueueMetrics {
 
 // Execute the squeue command and return its output
 func QueueData() []byte {
-	cmd := exec.Command("squeue", "-h", "-o %A,%T,%r", "--states=all")
+	cmd := exec.Command("squeue", "-h", "-o '%P,%u,%j,%T,%C,%m", "--states=all")
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		log.Fatal(err)
@@ -106,64 +93,39 @@ func QueueData() []byte {
  */
 
 func NewQueueCollector() *QueueCollector {
+	labels := []string{"partition", "user", "name", "state"}
 	return &QueueCollector{
-		pending:     prometheus.NewDesc("slurm_queue_pending", "Pending jobs in queue", nil, nil),
-		pending_dep: prometheus.NewDesc("slurm_queue_pending_dependency", "Pending jobs because of dependency in queue", nil, nil),
-		running:     prometheus.NewDesc("slurm_queue_running", "Running jobs in the cluster", nil, nil),
-		suspended:   prometheus.NewDesc("slurm_queue_suspended", "Suspended jobs in the cluster", nil, nil),
-		cancelled:   prometheus.NewDesc("slurm_queue_cancelled", "Cancelled jobs in the cluster", nil, nil),
-		completing:  prometheus.NewDesc("slurm_queue_completing", "Completing jobs in the cluster", nil, nil),
-		completed:   prometheus.NewDesc("slurm_queue_completed", "Completed jobs in the cluster", nil, nil),
-		configuring: prometheus.NewDesc("slurm_queue_configuring", "Configuring jobs in the cluster", nil, nil),
-		failed:      prometheus.NewDesc("slurm_queue_failed", "Number of failed jobs", nil, nil),
-		timeout:     prometheus.NewDesc("slurm_queue_timeout", "Jobs stopped by timeout", nil, nil),
-		preempted:   prometheus.NewDesc("slurm_queue_preempted", "Number of preempted jobs", nil, nil),
-		node_fail:   prometheus.NewDesc("slurm_queue_node_fail", "Number of jobs stopped due to node fail", nil, nil),
+		slurm_queue_jobs:     prometheus.NewDesc("slurm_queue_jobs", "Pending jobs in queue", labels, nil),
 	}
 }
 
 type QueueCollector struct {
-	pending     *prometheus.Desc
-	pending_dep *prometheus.Desc
-	running     *prometheus.Desc
-	suspended   *prometheus.Desc
-	cancelled   *prometheus.Desc
-	completing  *prometheus.Desc
-	completed   *prometheus.Desc
-	configuring *prometheus.Desc
-	failed      *prometheus.Desc
-	timeout     *prometheus.Desc
-	preempted   *prometheus.Desc
-	node_fail   *prometheus.Desc
+	slurm_queue_jobs     *prometheus.Desc
 }
 
 func (qc *QueueCollector) Describe(ch chan<- *prometheus.Desc) {
-	ch <- qc.pending
-	ch <- qc.pending_dep
-	ch <- qc.running
-	ch <- qc.suspended
-	ch <- qc.cancelled
-	ch <- qc.completing
-	ch <- qc.completed
-	ch <- qc.configuring
-	ch <- qc.failed
-	ch <- qc.timeout
-	ch <- qc.preempted
-	ch <- qc.node_fail
+	ch <- qc.slurm_queue_jobs
 }
 
 func (qc *QueueCollector) Collect(ch chan<- prometheus.Metric) {
 	qm := QueueGetMetrics()
-	ch <- prometheus.MustNewConstMetric(qc.pending, prometheus.GaugeValue, qm.pending)
-	ch <- prometheus.MustNewConstMetric(qc.pending_dep, prometheus.GaugeValue, qm.pending_dep)
-	ch <- prometheus.MustNewConstMetric(qc.running, prometheus.GaugeValue, qm.running)
-	ch <- prometheus.MustNewConstMetric(qc.suspended, prometheus.GaugeValue, qm.suspended)
-	ch <- prometheus.MustNewConstMetric(qc.cancelled, prometheus.GaugeValue, qm.cancelled)
-	ch <- prometheus.MustNewConstMetric(qc.completing, prometheus.GaugeValue, qm.completing)
-	ch <- prometheus.MustNewConstMetric(qc.completed, prometheus.GaugeValue, qm.completed)
-	ch <- prometheus.MustNewConstMetric(qc.configuring, prometheus.GaugeValue, qm.configuring)
-	ch <- prometheus.MustNewConstMetric(qc.failed, prometheus.GaugeValue, qm.failed)
-	ch <- prometheus.MustNewConstMetric(qc.timeout, prometheus.GaugeValue, qm.timeout)
-	ch <- prometheus.MustNewConstMetric(qc.preempted, prometheus.GaugeValue, qm.preempted)
-	ch <- prometheus.MustNewConstMetric(qc.node_fail, prometheus.GaugeValue, qm.node_fail)
+	if len(qm.slurm_queue) > 0 {
+		for index, job_info := range  qm.slurm_queue {
+			splitted := strings.Split(index, ",")
+			partition := splitted[0]
+			user := splitted[1]
+			name := splitted[2]
+			state := splitted[3]
+
+			ch <- prometheus.MustNewConstMetric(
+				qc.slurm_queue_jobs,
+				prometheus.GaugeValue,
+				job_info["jobs"],
+				partition, 
+				user, 
+				name,
+				state,
+			)
+		}
+	}
 }
