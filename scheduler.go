@@ -58,6 +58,7 @@ func SplitColonValueToFloat(input string) float64 {
   // Verify if the string extracted from the sdiag output is empty
   if input == "" { return 0 }
   str := strings.Split(input,":")
+  if len(str) < 2 { log.Print(input) ; return 0 }
   rvalue := strings.TrimSpace(str[1])
   flt, _ := strconv.ParseFloat(rvalue,64)
   return flt
